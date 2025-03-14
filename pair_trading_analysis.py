@@ -8,9 +8,10 @@ import yfinance as yf
 # Streamlit App Title
 st.title("📈 Pair Trading Analysis App")
 
-# User Input: Multiple Stock Pairs
+# Sidebar: User Input for Stock Pairs
 st.sidebar.header("Enter Stock Pairs")
 
+# Allow user to enter multiple stock pairs
 num_pairs = st.sidebar.number_input("How many pairs do you want to analyze?", min_value=1, max_value=10, value=1)
 
 stock_pairs = []
@@ -21,21 +22,25 @@ for i in range(num_pairs):
     if stock_a and stock_b:
         stock_pairs.append((stock_a.upper(), stock_b.upper()))
 
-# User Input: Date Range
+# Sidebar: Date Range Selection
 start_date = st.sidebar.date_input("Start Date", pd.to_datetime("2023-01-01"))
 end_date = st.sidebar.date_input("End Date", pd.to_datetime("today"))
 
+# Ensure at least one valid stock pair is entered
 if not stock_pairs:
     st.warning("Enter at least one valid stock pair to analyze.")
     st.stop()
 
-# Function to fetch stock data
+# Function to fetch stock data from Yahoo Finance
 def get_stock_data(ticker):
     try:
         df = yf.download(ticker, start=start_date, end=end_date)["Adj Close"]
+        if df.empty:
+            st.warning(f"⚠️ No data found for {ticker}. Check if the stock symbol is correct.")
+            return None
         return df
     except Exception as e:
-        st.error(f"Error fetching data for {ticker}: {e}")
+        st.error(f"❌ Error fetching data for {ticker}: {e}")
         return None
 
 # Fetch stock data
@@ -48,27 +53,33 @@ for stock_a, stock_b in stock_pairs:
 output_data = []
 
 for stock_a, stock_b in stock_pairs:
+    # Ensure both stocks have valid data before proceeding
     if stock_data[stock_a] is None or stock_data[stock_b] is None:
         continue
-    
-    # Align data to same date range
+
+    # Align data to the same date range
     df = pd.DataFrame({stock_a: stock_data[stock_a], stock_b: stock_data[stock_b]}).dropna()
 
-    # Regression 1 (Stock A ~ Stock B)
+    # Ensure DataFrame is not empty
+    if df.empty:
+        st.warning(f"⚠️ No overlapping data available for {stock_a} and {stock_b}. Skipping this pair.")
+        continue
+
+    # Run Regression 1 (Stock A ~ Stock B)
     X = sm.add_constant(df[stock_b])
     y = df[stock_a]
     model1 = sm.OLS(y, X).fit()
     resid1 = model1.resid
     se1 = np.std(resid1) / (model1.bse[0] if len(model1.bse) > 0 else np.nan)
 
-    # Regression 2 (Stock B ~ Stock A)
+    # Run Regression 2 (Stock B ~ Stock A)
     X = sm.add_constant(df[stock_a])
     y = df[stock_b]
     model2 = sm.OLS(y, X).fit()
     resid2 = model2.resid
     se2 = np.std(resid2) / (model2.bse[0] if len(model2.bse) > 0 else np.nan)
 
-    # Choose best model
+    # Select the best model (lower standard error)
     if se1 < se2:
         best_beta, best_intercept, best_resid = model1.params[1], model1.params[0], resid1
         best_se = se1
@@ -76,7 +87,7 @@ for stock_a, stock_b in stock_pairs:
         best_beta, best_intercept, best_resid = model2.params[1], model2.params[0], resid2
         best_se = se2
 
-    # ADF Test
+    # ADF Test for Stationarity
     if best_resid.isnull().any() or len(best_resid) < 10:
         adf_test_value = np.nan
     else:
@@ -85,10 +96,10 @@ for stock_a, stock_b in stock_pairs:
         except ValueError:
             adf_test_value = np.nan
 
-    # Current Residual
+    # Current Residual Value
     current_residual = best_resid.iloc[-1] if len(best_resid) > 0 else np.nan
 
-    # Store results
+    # Store output
     output_data.append([stock_a, stock_b, best_beta, best_intercept, adf_test_value, best_se, current_residual])
 
 # Display Results
