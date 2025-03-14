@@ -1,105 +1,111 @@
-import os
+import streamlit as st
 import pandas as pd
-import numpy as np
 import statsmodels.api as sm
 from statsmodels.tsa.stattools import adfuller
-import tabulate
 
-# Define the folder path where all files are stored
-folder_path = r"C:\Users\sures\Pairtrading\Files"  # Update with actual folder path
+# Streamlit App Title
+st.title("Pair Trading Analysis")
 
+# 📂 Upload the single Excel File
+st.sidebar.header("Upload the Pair Trading Data File")
+uploaded_file = st.sidebar.file_uploader("Upload Template.xlsx", type=["xlsx"])
 
-final_pairs_file = os.path.join(folder_path, "finalpair.xlsx")
-final_pairs = pd.read_excel(final_pairs_file)
-final_pairs.columns = final_pairs.columns.str.strip()
+if not uploaded_file:
+    st.warning("Please upload the Excel file to proceed.")
+    st.stop()
 
+# Read Excel File
+xls = pd.ExcelFile(uploaded_file)
 
-print("Columns in finalpair.xlsx:", final_pairs.columns.tolist())
+# Load the "Pairs" sheet
+pairs_df = xls.parse("Pairs")
+pairs_df.columns = pairs_df.columns.str.strip()
 
+st.write("### Uploaded Stock Pairs Data")
+st.dataframe(pairs_df)
 
-output_data = []
+# Dictionary to store stock data
+stock_data = {}
 
+# Load stock closing prices from each sheet
+for sheet_name in xls.sheet_names:
+    if sheet_name == "Pairs":
+        continue  # Skip the pairs sheet
 
-def load_stock_data(stock_name):
-    file_path = os.path.join(folder_path, f"{stock_name}.csv")
+    df = xls.parse(sheet_name)
     
-    if not os.path.exists(file_path):
-        print(f"File not found: {file_path}")
-        return None
-
-    df = pd.read_csv(file_path)
-
-    
-    print(f"Columns in {stock_name}.csv:", df.columns.tolist())
-
-    
-    close_col = [col for col in df.columns if "Close" in col]
-    if not close_col:
-        print(f"Missing 'Close' column in {stock_name}.csv")
-        return None
-    close_col = close_col[0]  # Use the first match
-
-    
-    df.index = range(len(df))  # Reset index to ensure serial alignment
-    return df[close_col]  # Return Close prices only
-
-
-for index, row in final_pairs.iterrows():
-    
-    stock_A, stock_B = row.iloc[0], row.iloc[1]  # Assuming first two columns contain stock names
-
-    
-    close_A = load_stock_data(stock_A)
-    close_B = load_stock_data(stock_B)
-    if close_A is None or close_B is None:
+    # Ensure required columns exist
+    if "Close" not in df.columns:
+        st.warning(f"Skipping {sheet_name}: No 'Close' column found.")
         continue
 
-    
+    df = df[["Close"]].dropna()  # Keep only Close prices
+    df.index = range(len(df))  # Reset index to ensure proper alignment
+    stock_data[sheet_name] = df
+
+st.success("Files uploaded and processed successfully!")
+
+# 📈 Pair Trading Analysis
+output_data = []
+
+for index, row in pairs_df.iterrows():
+    stock_A, stock_B = row.iloc[0], row.iloc[1]  # Assuming first two columns contain stock names
+
+    if stock_A not in stock_data or stock_B not in stock_data:
+        st.warning(f"Skipping pair ({stock_A}, {stock_B}) - Data missing.")
+        continue
+
+    close_A = stock_data[stock_A]["Close"]
+    close_B = stock_data[stock_B]["Close"]
+
+    # Ensure both stocks have the same number of data points
     min_length = min(len(close_A), len(close_B))
     close_A, close_B = close_A.iloc[:min_length], close_B.iloc[:min_length]
 
-    
+    # Merge the data
     merged_df = pd.DataFrame({stock_A: close_A.values, stock_B: close_B.values})
 
-    
+    # Run Regression 1 (Stock A ~ Stock B)
     X = sm.add_constant(merged_df[stock_B])
     y = merged_df[stock_A]
     model1 = sm.OLS(y, X).fit()
     resid1 = model1.resid
-    tg1 = np.std(resid1)
-    gt1 = model1.bse[0] if len(model1.bse) > 0 else np.nan
-    se1 = gt1 / tg1 if tg1 != 0 else np.inf
+    se1 = np.std(resid1) / (model1.bse[0] if len(model1.bse) > 0 else np.nan)
 
-    
+    # Run Regression 2 (Stock B ~ Stock A)
     X = sm.add_constant(merged_df[stock_A])
     y = merged_df[stock_B]
     model2 = sm.OLS(y, X).fit()
     resid2 = model2.resid
-    tg2 = np.std(resid2)
-    gt2 = model2.bse[0] if len(model2.bse) > 0 else np.nan
-    se2 = gt2 / tg2 if tg2 != 0 else np.inf
+    se2 = np.std(resid2) / (model2.bse[0] if len(model2.bse) > 0 else np.nan)
 
-    
+    # Select the best model (lower standard error)
     if se1 < se2:
-        best_beta, best_intercept = model1.params[1], model1.params[0]
-        best_se, best_resid = se1, resid1
+        best_beta, best_intercept, best_resid = model1.params[1], model1.params[0], resid1
+        best_se = se1
     else:
-        best_beta, best_intercept = model2.params[1], model2.params[0]
-        best_se, best_resid = se2, resid2
+        best_beta, best_intercept, best_resid = model2.params[1], model2.params[0], resid2
+        best_se = se2
 
-    
-    adf_test_value = adfuller(best_resid)[0]
+    # ADF Test for Stationarity
+    if best_resid.isnull().any() or len(best_resid) < 10:
+        adf_test_value = np.nan
+    else:
+        try:
+            adf_test_value = adfuller(best_resid.dropna())[0]
+        except ValueError:
+            adf_test_value = np.nan
 
-    
-    current_residual = best_resid.iloc[-1]
+    # Current Residual Value
+    current_residual = best_resid.iloc[-1] if len(best_resid) > 0 else np.nan
 
-    
-    output_data.append([
-        stock_A, stock_B, best_beta, best_intercept, adf_test_value, best_se, current_residual
-    ])
+    # Store output
+    output_data.append([stock_A, stock_B, best_beta, best_intercept, adf_test_value, best_se, current_residual])
 
+# Display Results in Streamlit
+st.write("## Pair Trading Analysis Results")
+output_df = pd.DataFrame(output_data, columns=["Stock A", "Stock B", "Beta", "Intercept", "ADF Test Value", "STD ERROR", "Current Residual"])
+st.dataframe(output_df)
 
-print("\nPair Trading Analysis Results:\n")
-print(tabulate.tabulate(output_data, headers=[
-    "Stock A", "Stock B", "Beta", "Intercept", "ADF Test Value", "STD ERROR", "Current Residual"
-], tablefmt="fancy_grid"))
+# Downloadable CSV
+st.download_button(label="Download Results as CSV", data=output_df.to_csv(index=False), file_name="pair_trading_results.csv", mime="text/csv")
