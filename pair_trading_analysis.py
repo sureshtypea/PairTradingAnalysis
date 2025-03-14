@@ -1,87 +1,74 @@
 import streamlit as st
 import pandas as pd
-import statsmodels.api as sm
 import numpy as np
+import statsmodels.api as sm
 from statsmodels.tsa.stattools import adfuller
-
+import yfinance as yf
 
 # Streamlit App Title
-st.title("Pair Trading Analysis")
+st.title("📈 Pair Trading Analysis App")
 
-# 📂 Upload the single Excel File
-st.sidebar.header("Upload the Pair Trading Data File")
-uploaded_file = st.sidebar.file_uploader("Upload Template.xlsx", type=["xlsx"])
+# User Input: Multiple Stock Pairs
+st.sidebar.header("Enter Stock Pairs")
 
-if not uploaded_file:
-    st.warning("Please upload the Excel file to proceed.")
+num_pairs = st.sidebar.number_input("How many pairs do you want to analyze?", min_value=1, max_value=10, value=1)
+
+stock_pairs = []
+for i in range(num_pairs):
+    stock_a = st.sidebar.text_input(f"Stock A (Pair {i+1})", key=f"stock_a_{i}")
+    stock_b = st.sidebar.text_input(f"Stock B (Pair {i+1})", key=f"stock_b_{i}")
+    
+    if stock_a and stock_b:
+        stock_pairs.append((stock_a.upper(), stock_b.upper()))
+
+# User Input: Date Range
+start_date = st.sidebar.date_input("Start Date", pd.to_datetime("2023-01-01"))
+end_date = st.sidebar.date_input("End Date", pd.to_datetime("today"))
+
+if not stock_pairs:
+    st.warning("Enter at least one valid stock pair to analyze.")
     st.stop()
 
-# Read Excel File
-xls = pd.ExcelFile(uploaded_file)
+# Function to fetch stock data
+def get_stock_data(ticker):
+    try:
+        df = yf.download(ticker, start=start_date, end=end_date)["Adj Close"]
+        return df
+    except Exception as e:
+        st.error(f"Error fetching data for {ticker}: {e}")
+        return None
 
-# Load the "Pairs" sheet
-pairs_df = xls.parse("Pairs")
-pairs_df.columns = pairs_df.columns.str.strip()
-
-st.write("### Uploaded Stock Pairs Data")
-st.dataframe(pairs_df)
-
-# Dictionary to store stock data
+# Fetch stock data
 stock_data = {}
+for stock_a, stock_b in stock_pairs:
+    stock_data[stock_a] = get_stock_data(stock_a)
+    stock_data[stock_b] = get_stock_data(stock_b)
 
-# Load stock closing prices from each sheet
-for sheet_name in xls.sheet_names:
-    if sheet_name == "Pairs":
-        continue  # Skip the pairs sheet
-
-    df = xls.parse(sheet_name)
-    
-    # Ensure required columns exist
-    if "Close" not in df.columns:
-        st.warning(f"Skipping {sheet_name}: No 'Close' column found.")
-        continue
-
-    df = df[["Close"]].dropna()  # Keep only Close prices
-    df.index = range(len(df))  # Reset index to ensure proper alignment
-    stock_data[sheet_name] = df
-
-st.success("Files uploaded and processed successfully!")
-
-# 📈 Pair Trading Analysis
+# Pair Trading Analysis
 output_data = []
 
-for index, row in pairs_df.iterrows():
-    stock_A, stock_B = row.iloc[0], row.iloc[1]  # Assuming first two columns contain stock names
-
-    if stock_A not in stock_data or stock_B not in stock_data:
-        st.warning(f"Skipping pair ({stock_A}, {stock_B}) - Data missing.")
+for stock_a, stock_b in stock_pairs:
+    if stock_data[stock_a] is None or stock_data[stock_b] is None:
         continue
+    
+    # Align data to same date range
+    df = pd.DataFrame({stock_a: stock_data[stock_a], stock_b: stock_data[stock_b]}).dropna()
 
-    close_A = stock_data[stock_A]["Close"]
-    close_B = stock_data[stock_B]["Close"]
-
-    # Ensure both stocks have the same number of data points
-    min_length = min(len(close_A), len(close_B))
-    close_A, close_B = close_A.iloc[:min_length], close_B.iloc[:min_length]
-
-    # Merge the data
-    merged_df = pd.DataFrame({stock_A: close_A.values, stock_B: close_B.values})
-
-    # Run Regression 1 (Stock A ~ Stock B)
-    X = sm.add_constant(merged_df[stock_B])
-    y = merged_df[stock_A]
+    # Regression 1 (Stock A ~ Stock B)
+    X = sm.add_constant(df[stock_b])
+    y = df[stock_a]
     model1 = sm.OLS(y, X).fit()
     resid1 = model1.resid
     se1 = np.std(resid1) / (model1.bse[0] if len(model1.bse) > 0 else np.nan)
 
-    # Run Regression 2 (Stock B ~ Stock A)
-    X = sm.add_constant(merged_df[stock_A])
-    y = merged_df[stock_B]
+    # Regression 2 (Stock B ~ Stock A)
+    X = sm.add_constant(df[stock_a])
+    y = df[stock_b]
     model2 = sm.OLS(y, X).fit()
     resid2 = model2.resid
     se2 = np.std(resid2) / (model2.bse[0] if len(model2.bse) > 0 else np.nan)
 
-    # Select the best model (lower standard error)
+    # Choose best model
     if se1 < se2:
         best_beta, best_intercept, best_resid = model1.params[1], model1.params[0], resid1
         best_se = se1
@@ -89,7 +76,7 @@ for index, row in pairs_df.iterrows():
         best_beta, best_intercept, best_resid = model2.params[1], model2.params[0], resid2
         best_se = se2
 
-    # ADF Test for Stationarity
+    # ADF Test
     if best_resid.isnull().any() or len(best_resid) < 10:
         adf_test_value = np.nan
     else:
@@ -98,16 +85,16 @@ for index, row in pairs_df.iterrows():
         except ValueError:
             adf_test_value = np.nan
 
-    # Current Residual Value
+    # Current Residual
     current_residual = best_resid.iloc[-1] if len(best_resid) > 0 else np.nan
 
-    # Store output
-    output_data.append([stock_A, stock_B, best_beta, best_intercept, adf_test_value, best_se, current_residual])
+    # Store results
+    output_data.append([stock_a, stock_b, best_beta, best_intercept, adf_test_value, best_se, current_residual])
 
-# Display Results in Streamlit
+# Display Results
 st.write("## Pair Trading Analysis Results")
 output_df = pd.DataFrame(output_data, columns=["Stock A", "Stock B", "Beta", "Intercept", "ADF Test Value", "STD ERROR", "Current Residual"])
 st.dataframe(output_df)
 
-# Downloadable CSV
+# Download Option
 st.download_button(label="Download Results as CSV", data=output_df.to_csv(index=False), file_name="pair_trading_results.csv", mime="text/csv")
