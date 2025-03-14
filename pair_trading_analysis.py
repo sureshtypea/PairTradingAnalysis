@@ -1,7 +1,9 @@
 import streamlit as st
 import pandas as pd
 import statsmodels.api as sm
+import numpy as np
 from statsmodels.tsa.stattools import adfuller
+
 
 # Streamlit App Title
 st.title("Pair Trading Analysis")
