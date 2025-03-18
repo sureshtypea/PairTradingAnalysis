@@ -3,109 +3,108 @@ import pandas as pd
 import numpy as np
 import statsmodels.api as sm
 from statsmodels.tsa.stattools import adfuller
-import yfinance as yf
+import io
 
-# Streamlit App Title
-st.title("📈 Pair Trading Analysis App")
+st.title("Scalable Pair Trading Analysis")
 
-# Sidebar: User Input for Stock Pairs
-st.sidebar.header("Enter Stock Pairs")
+# Upload Excel file
+uploaded_file = st.file_uploader("Upload Excel file (Stock Pairs & Data)", type=["xlsx"])
 
-# Allow user to enter multiple stock pairs
-num_pairs = st.sidebar.number_input("How many pairs do you want to analyze?", min_value=1, max_value=10, value=1)
+if uploaded_file:
+    # Load the Excel file
+    xls = pd.ExcelFile(uploaded_file)
 
-stock_pairs = []
-for i in range(num_pairs):
-    stock_a = st.sidebar.text_input(f"Stock A (Pair {i+1})", key=f"stock_a_{i}")
-    stock_b = st.sidebar.text_input(f"Stock B (Pair {i+1})", key=f"stock_b_{i}")
-    
-    if stock_a and stock_b:
-        stock_pairs.append((stock_a.upper(), stock_b.upper()))
+    # Read pairs from the first sheet
+    final_pairs = pd.read_excel(xls, sheet_name=xls.sheet_names[0])
+    final_pairs.columns = final_pairs.columns.str.strip()  # Clean column names
 
-# Sidebar: Date Range Selection
-start_date = st.sidebar.date_input("Start Date", pd.to_datetime("2023-01-01"))
-end_date = st.sidebar.date_input("End Date", pd.to_datetime("today"))
+    st.write("**Uploaded Stock Pairs:**")
+    st.dataframe(final_pairs)
 
-# Ensure at least one valid stock pair is entered
-if not stock_pairs:
-    st.warning("Enter at least one valid stock pair to analyze.")
-    st.stop()
+    results = []
 
-# Function to fetch stock data from Yahoo Finance
-def get_stock_data(ticker):
-    try:
-        df = yf.download(ticker, start=start_date, end=end_date)["Adj Close"]
-        if df.empty:
-            st.warning(f"⚠️ No data found for {ticker}. Check if the stock symbol is correct.")
-            return None
-        return df
-    except Exception as e:
-        st.error(f"❌ Error fetching data for {ticker}: {e}")
-        return None
-
-# Fetch stock data
-stock_data = {}
-for stock_a, stock_b in stock_pairs:
-    stock_data[stock_a] = get_stock_data(stock_a)
-    stock_data[stock_b] = get_stock_data(stock_b)
-
-# Pair Trading Analysis
-output_data = []
-
-for stock_a, stock_b in stock_pairs:
-    # Ensure both stocks have valid data before proceeding
-    if stock_data[stock_a] is None or stock_data[stock_b] is None:
-        continue
-
-    # Align data to the same date range
-    df = pd.DataFrame({stock_a: stock_data[stock_a], stock_b: stock_data[stock_b]}).dropna()
-
-    # Ensure DataFrame is not empty
-    if df.empty:
-        st.warning(f"⚠️ No overlapping data available for {stock_a} and {stock_b}. Skipping this pair.")
-        continue
-
-    # Run Regression 1 (Stock A ~ Stock B)
-    X = sm.add_constant(df[stock_b])
-    y = df[stock_a]
-    model1 = sm.OLS(y, X).fit()
-    resid1 = model1.resid
-    se1 = np.std(resid1) / (model1.bse[0] if len(model1.bse) > 0 else np.nan)
-
-    # Run Regression 2 (Stock B ~ Stock A)
-    X = sm.add_constant(df[stock_a])
-    y = df[stock_b]
-    model2 = sm.OLS(y, X).fit()
-    resid2 = model2.resid
-    se2 = np.std(resid2) / (model2.bse[0] if len(model2.bse) > 0 else np.nan)
-
-    # Select the best model (lower standard error)
-    if se1 < se2:
-        best_beta, best_intercept, best_resid = model1.params[1], model1.params[0], resid1
-        best_se = se1
-    else:
-        best_beta, best_intercept, best_resid = model2.params[1], model2.params[0], resid2
-        best_se = se2
-
-    # ADF Test for Stationarity
-    if best_resid.isnull().any() or len(best_resid) < 10:
-        adf_test_value = np.nan
-    else:
+    # Function to read stock data from respective sheets
+    def load_stock_data(sheet_name):
         try:
-            adf_test_value = adfuller(best_resid.dropna())[0]
-        except ValueError:
-            adf_test_value = np.nan
+            if sheet_name not in xls.sheet_names:
+                return None
+            df = pd.read_excel(xls, sheet_name=sheet_name)
+            close_col = [col for col in df.columns if "Close" in col]
+            if not close_col:
+                return None
+            close_col = close_col[0]  # Use the first matching column
+            df = df[[close_col]].dropna()  # Keep only Close column and drop NaN
+            df.columns = ["Close"]
+            return df["Close"]
+        except Exception as e:
+            st.warning(f"Error reading sheet {sheet_name}: {e}")
+            return None
 
-    # Current Residual Value
-    current_residual = best_resid.iloc[-1] if len(best_resid) > 0 else np.nan
+    for _, row in final_pairs.iterrows():
+        stock_A, stock_B = row["Stock A"], row["Stock B"]
+        
+        close_A = load_stock_data(stock_A)
+        close_B = load_stock_data(stock_B)
+        
+        if close_A is None or close_B is None:
+            st.warning(f"Missing data for {stock_A} or {stock_B}. Skipping...")
+            continue
 
-    # Store output
-    output_data.append([stock_a, stock_b, best_beta, best_intercept, adf_test_value, best_se, current_residual])
+        # Align data lengths
+        min_length = min(len(close_A), len(close_B))
+        close_A, close_B = close_A.iloc[:min_length], close_B.iloc[:min_length]
 
-# Display Results
-st.write("## Pair Trading Analysis Results")
-output_df = pd.DataFrame(output_data, columns=["Stock A", "Stock B", "Beta", "Intercept", "ADF Test Value", "STD ERROR", "Current Residual"])
-st.dataframe(output_df)
+        # Create DataFrame
+        merged_df = pd.DataFrame({stock_A: close_A.values, stock_B: close_B.values})
 
-# Download Option
-st.download_button(label="Download Results as CSV", data=output_df.to_csv(index=False), file_name="pair_trading_results.csv", mime="text/csv")
+        # Perform Regression: A = F(B)
+        X = sm.add_constant(merged_df[stock_B])
+        y = merged_df[stock_A]
+        model1 = sm.OLS(y, X).fit()
+        resid1 = model1.resid
+        tg1 = np.std(resid1)
+        gt1 = model1.bse[0] if len(model1.bse) > 0 else np.nan
+        se1 = gt1 / tg1 if tg1 != 0 else np.inf
+
+        # Perform Regression: B = F(A)
+        X = sm.add_constant(merged_df[stock_A])
+        y = merged_df[stock_B]
+        model2 = sm.OLS(y, X).fit()
+        resid2 = model2.resid
+        tg2 = np.std(resid2)
+        gt2 = model2.bse[0] if len(model2.bse) > 0 else np.nan
+        se2 = gt2 / tg2 if tg2 != 0 else np.inf
+
+        # Select the best model based on lowest standard error
+        if se1 < se2:
+            best_beta, best_intercept = model1.params[1], model1.params[0]
+            best_se, best_resid = se1, resid1
+        else:
+            best_beta, best_intercept = model2.params[1], model2.params[0]
+            best_se, best_resid = se2, resid2
+
+        # Perform ADF Test on residuals
+        adf_test_value = adfuller(best_resid)[0]
+
+        # Store latest residual value
+        current_residual = best_resid.iloc[-1]
+
+        # Store results
+        results.append([stock_A, stock_B, best_beta, best_intercept, adf_test_value, best_se, current_residual])
+
+    # Display results in table format
+    st.write("**Pair Trading Analysis Results:**")
+    results_df = pd.DataFrame(results, columns=["Stock A", "Stock B", "Beta", "Intercept", "ADF Test Value", "STD ERROR", "Current Residual"])
+    st.dataframe(results_df)
+
+    # Create downloadable CSV file
+    csv_output = io.StringIO()
+    results_df.to_csv(csv_output, index=False)
+    csv_output.seek(0)
+
+    st.download_button(
+        label="Download Results as CSV",
+        data=csv_output,
+        file_name="pair_trading_results.csv",
+        mime="text/csv"
+    )
