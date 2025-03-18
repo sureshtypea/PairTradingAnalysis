@@ -5,7 +5,8 @@ import statsmodels.api as sm
 from statsmodels.tsa.stattools import adfuller
 import io
 
-st.title("Scalable Pair Trading Analysis")
+# Change App Title
+st.title("Pair Trading Analysis")
 
 # Upload Excel file
 uploaded_file = st.file_uploader("Upload Excel file (Stock Pairs & Data)", type=["xlsx"])
@@ -97,14 +98,14 @@ if uploaded_file:
     results_df = pd.DataFrame(results, columns=["Stock A", "Stock B", "Beta", "Intercept", "ADF Test Value", "STD ERROR", "Current Residual"])
     st.dataframe(results_df)
 
-    # Create downloadable CSV file
+    # Create downloadable CSV file (Fixed the issue)
     csv_output = io.StringIO()
     results_df.to_csv(csv_output, index=False)
-    csv_output.seek(0)
+    csv_output.seek(0)  # Move cursor to start
 
     st.download_button(
         label="Download Results as CSV",
-        data=csv_output,
+        data=csv_output.getvalue(),  # Use .getvalue() to convert StringIO to string
         file_name="pair_trading_results.csv",
         mime="text/csv"
     )
