@@ -85,17 +85,19 @@ if uploaded_file:
             best_se, best_resid = se2, resid2
 
         # Perform ADF Test on residuals
-        adf_test_value = adfuller(best_resid)[0]
+        adf_result = adfuller(best_resid)
+        adf_test_value = adf_result[0]
+        adf_p_value = adf_result[1]  # Extract p-value
 
         # Store latest residual value
         current_residual = best_resid.iloc[-1]
 
         # Store results
-        results.append([stock_A, stock_B, best_beta, best_intercept, adf_test_value, best_se, current_residual])
+        results.append([stock_A, stock_B, best_beta, best_intercept, adf_test_value, adf_p_value, best_se, current_residual])
 
     # Display results in table format
     st.write("**Pair Trading Analysis Results:**")
-    results_df = pd.DataFrame(results, columns=["Stock A", "Stock B", "Beta", "Intercept", "ADF Test Value", "STD ERROR", "Current Residual"])
+    results_df = pd.DataFrame(results, columns=["Stock A", "Stock B", "Beta", "Intercept", "ADF Test Value", "ADF p-value", "STD ERROR", "Current Residual"])
     st.dataframe(results_df)
 
     # Create downloadable CSV file (Fixed the issue)
